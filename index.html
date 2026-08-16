@@ -365,7 +365,7 @@ function render(){ ({painel:vPainel,lanc:vLanc,pend:vPend,orc:vOrc,ano:vAno,caix
 /* ---------- painel ---------- */
 function vPainel(){
   const el=document.getElementById('p-painel');
-  if(!S.txs.length){ el.innerHTML = vazio('Nenhum lançamento ainda','Conecte o Outlook em Ajustes e toque em Atualizar, ou arraste os relatórios do Nubank direto na tela de Ajustes.'); return; }
+  if(!S.txs.length){ el.innerHTML = vazio('Nenhum lançamento ainda','Arraste os relatórios do Nubank na tela de Ajustes. Eles vão direto para o banco e aparecem em qualquer aparelho onde você entrar.'); return; }
   const m=filtro.ym, ts=doMes(m);
   const g=gasto(ts), e=entrada(ts), mov=movido(ts);
   const gCred=gasto(ts.filter(t=>t.fonte==='credito')), gDeb=gasto(ts.filter(t=>t.fonte==='debito'));
@@ -793,7 +793,10 @@ function sbHead(extra){
     'Content-Type': 'application/json' }, extra || {});
 }
 async function sb(caminho, opcoes){
-  const r = await fetch(SB_URL + '/rest/v1/' + caminho, Object.assign({ headers: sbHead((opcoes||{}).headers) }, opcoes));
+  const o = opcoes || {};
+  /* os cabecalhos vem por ultimo de proposito: se vierem primeiro, qualquer opcao com
+     headers proprios apaga a chave da API e o Supabase recusa a chamada */
+  const r = await fetch(SB_URL + '/rest/v1/' + caminho, Object.assign({}, o, { headers: sbHead(o.headers) }));
   if(!r.ok) throw new Error(await r.text());
   return r.status === 204 ? null : r.json();
 }
