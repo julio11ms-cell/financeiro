@@ -196,7 +196,7 @@ const SEED = [
   ['IOF','Tarifas e impostos'],['ANUIDADE','Tarifas e impostos'],['TARIFA','Tarifas e impostos'],['JUROS','Tarifas e impostos'],['MULTA','Tarifas e impostos'],['DARF','Tarifas e impostos'],
   ['RDB','Investimentos'],['CAIXINHA','Investimentos'],['RESGATE','Investimentos'],['APLICACAO','Investimentos'],['TESOURO','Investimentos'],
   ['SALARIO','Renda'],['PAGAMENTO DE SALARIO','Renda'],['ALLOHA','Renda'],['PROVENTO','Renda'],['RENDIMENTO','Renda'],
-  ['PAGAMENTO DE FATURA','Pagamento de fatura'],['PAGAMENTO RECEBIDO','Pagamento de fatura']
+  ['PAGAMENTO DE FATURA','Pagamento de fatura'],['PAGAMENTO RECEBIDO','Pagamento de fatura'],['TRANSFERENCIA ENVIADA','Transferências'],['TRANSFERENCIA RECEBIDA','Transferências'],['PANIFIC','Alimentação'],['ACOUGUE','Mercado'],['APLICACAO RDB','Investimentos'],['RESGATE RDB','Investimentos'],['SALDO EM ATRASO','Tarifas e impostos']
 ];
 
 /* ============================ parsers ============================ */
@@ -270,7 +270,12 @@ function categoriza(tx){
   return null;
 }
 function sugereChave(desc){
-  const d = norm(desc).replace(/^(COMPRA|PAGAMENTO|PIX (ENVIADO|RECEBIDO)|TRANSFERENCIA (ENVIADA|RECEBIDA))[ -]*/,'');
+  let d = norm(desc);
+  /* descricoes do Nubank vem como "Compra no debito - LOJA" ou "Transferencia enviada pelo Pix - FULANO".
+     O que identifica de verdade e o que vem depois do primeiro tracinho. */
+  const corte = d.indexOf(' - ');
+  if(corte > 0 && corte < 45) d = d.slice(corte + 3);
+  d = d.replace(/^(COMPRA|PAGAMENTO|PIX|TRANSFERENCIA|DEBITO|CREDITO)[ -]*/,'');
   return d.split(/[ \-*\/]/).filter(w=>w.length>2).slice(0,2).join(' ') || d.slice(0,14);
 }
 function reaplicar(){ S.txs.forEach(t=>{ if(!t.fixo) t.cat = categoriza(t) || t.cat; }); }
@@ -294,9 +299,13 @@ function addTxs(list){
 const anos = () => [...new Set(S.txs.map(t=>t.data.slice(0,4)))].sort().reverse();
 let filtro = { ym: hoje().slice(0,7), ano: hoje().slice(0,4), fonte:'todas', modo:'realizado' };
 const doMes = m => S.txs.filter(t=>ym(t.data)===m);
-const gasto = ts => ts.filter(t=>t.valor<0).reduce((s,t)=>s+Math.abs(t.valor),0);
-const entrada = ts => ts.filter(t=>t.valor>0).reduce((s,t)=>s+t.valor,0);
-function porCat(ts){ const o={}; ts.filter(t=>t.valor<0).forEach(t=>{ const c=t.cat||'Sem categoria'; o[c]=(o[c]||0)+Math.abs(t.valor); }); return Object.entries(o).sort((a,b)=>b[1]-a[1]); }
+/* mover dinheiro entre contas suas nao e gasto nem receita: pagar a fatura, aplicar e resgatar */
+const NAO_GASTO = new Set(['Pagamento de fatura','Investimentos','Transferências']);
+const real = t => !NAO_GASTO.has(t.cat);
+const gasto = ts => ts.filter(t=>t.valor<0 && real(t)).reduce((s,t)=>s+Math.abs(t.valor),0);
+const entrada = ts => ts.filter(t=>t.valor>0 && real(t)).reduce((s,t)=>s+t.valor,0);
+const movido = ts => ts.filter(t=>t.valor<0 && !real(t)).reduce((s,t)=>s+Math.abs(t.valor),0);
+function porCat(ts){ const o={}; ts.filter(t=>t.valor<0 && real(t)).forEach(t=>{ const c=t.cat||'Sem categoria'; o[c]=(o[c]||0)+Math.abs(t.valor); }); return Object.entries(o).sort((a,b)=>b[1]-a[1]); }
 function previsto(cat, mes){ const b=S.budgets[cat]; if(!b) return 0; return (b.meses&&b.meses[mes]!=null)?b.meses[mes]:(b.padrao||0); }
 function realizado(cat, mes){ return doMes(mes).filter(t=>t.valor<0 && (t.cat||'Sem categoria')===cat).reduce((s,t)=>s+Math.abs(t.valor),0); }
 
@@ -358,7 +367,7 @@ function vPainel(){
   const el=document.getElementById('p-painel');
   if(!S.txs.length){ el.innerHTML = vazio('Nenhum lançamento ainda','Conecte o Outlook em Ajustes e toque em Atualizar, ou arraste os relatórios do Nubank direto na tela de Ajustes.'); return; }
   const m=filtro.ym, ts=doMes(m);
-  const g=gasto(ts), e=entrada(ts);
+  const g=gasto(ts), e=entrada(ts), mov=movido(ts);
   const gCred=gasto(ts.filter(t=>t.fonte==='credito')), gDeb=gasto(ts.filter(t=>t.fonte==='debito'));
   const pend=S.txs.filter(t=>!t.cat).length;
   const cats=porCat(ts);
@@ -376,6 +385,7 @@ function vPainel(){
   <div class="grid g4">
     <div class="card"><div class="lbl">Saídas do mês</div><div class="big out">${BRL(-g)}</div><div class="sub">${orcTot>0?('previsto '+BRL(orcTot)):'sem orçamento definido'}</div></div>
     <div class="card"><div class="lbl">Entradas</div><div class="big in">${BRL(e)}</div><div class="sub">${e-g>=0?'sobra':'déficit'} de ${BRL(Math.abs(e-g))}</div></div>
+    <div class="card"><div class="lbl">Movido entre contas</div><div class="big" style="color:var(--txt2)">${BRL(-mov)}</div><div class="sub">fatura, aplicação e transferência, fora do gasto</div></div>
     <div class="card"><div class="lbl">Crédito</div><div class="big cred">${BRL(-gCred)}</div><div class="sub">${g?Math.round(gCred/g*100):0}% do gasto</div></div>
     <div class="card"><div class="lbl">Débito</div><div class="big deb">${BRL(-gDeb)}</div><div class="sub">${g?Math.round(gDeb/g*100):0}% do gasto</div></div>
   </div>
