@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0B1013">
 <title>Controle financeiro</title>
-<script src="https://alcdn.msftauth.net/browser/2.38.4/js/msal-browser.min.js"></script>
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -134,14 +134,19 @@ label.f span{display:block;margin-bottom:5px}
 
 <div class="tabbar" id="tabbar"></div>
 
-<div id="lock" style="display:none;position:fixed;inset:0;z-index:200;background:var(--bg);align-items:center;justify-content:center;padding:24px">
-  <div class="card" style="max-width:360px;text-align:center">
-    <div class="dot" style="margin:0 auto 14px"></div>
+<div id="lock" style="position:fixed;inset:0;z-index:200;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px">
+  <div class="card" style="max-width:380px;width:100%">
+    <div class="dot" style="margin-bottom:14px"></div>
     <div class="disp" style="font-size:20px">Controle financeiro</div>
-    <p class="mini" style="margin:10px 0 18px">Entre com a conta Microsoft para abrir. Os dados ficam neste aparelho.</p>
-    <button class="btn primary" onclick="destravar()">Entrar com Microsoft</button>
-    <p class="mini" style="margin-top:14px"><a href="#" onclick="S.cfg.trava=false;save();location.reload()">Desligar o bloqueio</a></p>
+    <p class="mini" style="margin:10px 0 16px">Entre com seu e-mail. Um código de seis dígitos chega em segundos e vale por uma hora.</p>
+    <label class="f" style="margin-bottom:10px"><span class="lbl">E-mail</span><input id="loginEmail" type="email" placeholder="voce@exemplo.com" autocomplete="email"></label>
+    <div id="passoCodigo" style="display:none">
+      <label class="f" style="margin-bottom:10px"><span class="lbl">Código recebido</span><input id="loginCodigo" inputmode="numeric" placeholder="000000" autocomplete="one-time-code"></label>
+    </div>
+    <button class="btn primary" style="width:100%;justify-content:center" id="btnLogin" onclick="acaoLogin()">Enviar código</button>
+    <p class="mini" id="loginAviso" style="margin-top:12px;min-height:18px"></p>
   </div>
+</div>
 </div>
 
 <script>
@@ -153,9 +158,7 @@ const store = {
 };
 const DEF = {
   txs: [], rules: [], budgets: {}, boxes: [],
-  cfg: { theme:'dark', syncUrl:'', syncToken:'', cdi:13.90, fechamento:3, vencimento:10, alertaPct:80, trava:false,
-         clientId:'', remetente:'nubank', dias:180 },
-  msgIds: []
+  cfg: { theme:'dark', cdi:13.90, fechamento:3, vencimento:10, alertaPct:80 }
 };
 let S = load();
 function load(){
@@ -252,7 +255,7 @@ function parseArquivo(nome, text){
   for(let i=1;i<rows.length;i++){
     const r=rows[i]; const d=dt(r[iData]); if(!d) continue;
     let v=money(r[iVal]);
-    if(cartao) v = -Math.abs(v);           /* fatura: tudo é gasto */
+    if(cartao) v = -v;                     /* fatura: compra vira saída, estorno vira entrada */
     out.push(mk(d, iDesc>=0?r[iDesc]:'', v, cartao?'credito':'debito'));
   }
   return out;
@@ -282,7 +285,9 @@ function addTxs(list){
     idx.add(t.id); S.txs.push(t); novos++;
   }
   S.txs.sort((a,b)=> b.data.localeCompare(a.data));
-  save(); return novos;
+  save();
+  if(novos) nuvem(gravarLancamentos(S.txs.filter(t=>!t.enviado).map(t=>(t.enviado=true,t))));
+  return novos;
 }
 
 /* ============================ seletores de dados ============================ */
@@ -474,7 +479,8 @@ function vLanc(){
   </table></div></div>`;
 }
 function catsExtras(){ return [...new Set(S.rules.map(r=>r.cat).concat(S.txs.map(t=>t.cat)))].filter(c=>c&&!CATS.includes(c)); }
-function setCat(id,c){ const t=S.txs.find(x=>x.id===id); if(!t) return; t.cat=c||null; t.fixo=true; save(); render(); }
+function setCat(id,c){ const t=S.txs.find(x=>x.id===id); if(!t) return; t.cat=c||null; t.fixo=true; save(); render();
+  nuvem(sb('lancamentos?id=eq.'+encodeURIComponent(id), {method:'PATCH', body:JSON.stringify({categoria:t.cat, fixo:true})})); }
 
 /* ---------- pendentes ---------- */
 function vPend(){
@@ -512,6 +518,10 @@ function aplicaRegra(kw,selId){
   S.rules.unshift({kw,cat});
   S.txs.forEach(t=>{ if(!t.cat && norm(t.desc).includes(norm(kw))) t.cat=cat; });
   save(); toast('Regra criada para '+kw); render();
+  nuvem(Promise.all([
+    sb('regras', {method:'POST', headers:{Prefer:'resolution=merge-duplicates'}, body:JSON.stringify({chave:kw, categoria:cat})}),
+    gravarLancamentos(S.txs.filter(t=>t.cat===cat))
+  ]));
 }
 
 /* ---------- orçamento ---------- */
@@ -551,11 +561,15 @@ function vOrc(){
 function setOrc(cat,mes,v){
   S.budgets[cat]=S.budgets[cat]||{padrao:0,meses:{}};
   S.budgets[cat].meses[mes]=+v||0; save(); render();
+  nuvem(sb('orcamentos', {method:'POST', headers:{Prefer:'resolution=merge-duplicates'},
+    body:JSON.stringify({categoria:cat, mes:mes, valor:+v||0})}));
 }
 function copiarOrc(){
   const m=filtro.ym;
   Object.keys(S.budgets).forEach(c=>{ const v=previsto(c,m); S.budgets[c].padrao=v; });
   save(); toast('Valores do mês viraram o padrão do ano'); render();
+  nuvem(sb('orcamentos', {method:'POST', headers:{Prefer:'resolution=merge-duplicates'},
+    body:JSON.stringify(Object.keys(S.budgets).map(c=>({categoria:c, mes:'padrao', valor:S.budgets[c].padrao||0})))}));
 }
 
 /* ---------- ano (cascata) ---------- */
@@ -627,24 +641,39 @@ function vCaixa(){
       const v=+b.valor||0,p=+b.pct||100;
       const a=proj(v,p,30),c=proj(v,p,180),d=proj(v,p,365);
       return `<tr>
-        <td><input value="${esc(b.nome)}" onchange="S.boxes[${i}].nome=this.value;save()"></td>
-        <td class="rt"><input class="num rt" type="number" value="${v}" style="width:120px;text-align:right" onchange="S.boxes[${i}].valor=+this.value;save();render()"></td>
-        <td class="rt"><input class="num rt" type="number" value="${p}" style="width:80px;text-align:right" onchange="S.boxes[${i}].pct=+this.value;save();render()"></td>
+        <td><input value="${esc(b.nome)}" onchange="setCaixa(${i},'nome',this.value)"></td>
+        <td class="rt"><input class="num rt" type="number" value="${v}" style="width:120px;text-align:right" onchange="setCaixa(${i},'valor',+this.value)"></td>
+        <td class="rt"><input class="num rt" type="number" value="${p}" style="width:80px;text-align:right" onchange="setCaixa(${i},'pct',+this.value)"></td>
         <td class="rt num in">${BRL(a.liq)}</td><td class="rt num in">${BRL(c.liq)}</td><td class="rt num in">${BRL(d.liq)}</td>
-        <td class="rt"><button class="btn sm ghost" onclick="S.boxes.splice(${i},1);save();render()">remover</button></td></tr>`;
+        <td class="rt"><button class="btn sm ghost" onclick="removeCaixa(${i})">remover</button></td></tr>`;
     }).join('')||'<tr><td colspan="7" class="mini">Nenhuma caixinha cadastrada.</td></tr>'}</tbody>
   </table></div></div>
-  <button class="btn primary" onclick="S.boxes.push({nome:'Nova caixinha',valor:0,pct:100});save();render()">Adicionar caixinha</button>
+  <button class="btn primary" onclick="novaCaixa()">Adicionar caixinha</button>
   <div class="card" style="margin-top:12px">
     <div class="lbl">Como o número é calculado</div>
     <p class="mini" style="margin-top:8px">Os valores das colunas já saem líquidos de imposto de renda, pela tabela regressiva: 22,5% até 180 dias, 20% de 181 a 360, 17,5% de 361 a 720 e 15% acima disso. Resgates antes de 30 dias também pagam IOF, que não entra na conta acima. O rendimento real do Nubank varia com o CDI do dia, então trate isso como projeção, não como extrato.</p>
   </div>`;
 }
 
+function salvaCaixa(b){
+  return sb('caixinhas' + (b.id ? '?id=eq.'+b.id : ''), { method: b.id ? 'PATCH' : 'POST',
+    headers:{ Prefer:'return=representation' },
+    body: JSON.stringify({ nome:b.nome, valor:b.valor, pct_cdi:b.pct }) });
+}
+function setCaixa(i, campo, valor){ S.boxes[i][campo]=valor; save(); if(campo!=='nome') render(); nuvem(salvaCaixa(S.boxes[i])); }
+function novaCaixa(){
+  const b={nome:'Nova caixinha', valor:0, pct:100};
+  S.boxes.push(b); save(); render();
+  salvaCaixa(b).then(r=>{ if(r&&r[0]){ b.id=r[0].id; save(); } }).catch(e=>toast('Não salvou na nuvem: '+e.message));
+}
+function removeCaixa(i){
+  const b=S.boxes.splice(i,1)[0]; save(); render();
+  if(b.id) nuvem(sb('caixinhas?id=eq.'+b.id, {method:'DELETE'}));
+}
+
 /* ---------- ajustes ---------- */
 function vAjustes(){
   const el=document.getElementById('p-ajustes');
-  const conta=contaConectada();
   el.innerHTML=`
   <div class="card">
     <div class="lbl">Importar relatórios</div>
@@ -658,29 +687,11 @@ function vAjustes(){
   </div>
 
   <div class="card" style="margin-top:12px">
-    <div class="rowsp"><div class="lbl">Sua conta do Outlook</div>
-      ${conta?`<span class="pill in">${esc(conta)}</span>`:'<span class="pill">não conectada</span>'}</div>
-    <p class="mini" style="margin:8px 0 12px">O botão Atualizar entra na sua caixa de entrada, procura e-mails do Nubank com anexo que ainda não foram lidos e importa o que houver de novo. A senha do e-mail nunca passa por esta página: quem cuida do login é a própria Microsoft. É preciso registrar o app uma vez, no portal da Microsoft, e colar o ID aqui.</p>
-    <div class="grid g3">
-      <label class="f"><span class="lbl">ID do aplicativo</span><input id="cfgCli" value="${esc(S.cfg.clientId)}" placeholder="00000000-0000-0000-0000-000000000000"></label>
-      <label class="f"><span class="lbl">Remetente ou assunto</span><input id="cfgRem" value="${esc(S.cfg.remetente)}" placeholder="nubank"></label>
-      <label class="f"><span class="lbl">Buscar quantos dias atrás</span><input id="cfgDias" type="number" value="${S.cfg.dias}"></label>
-    </div>
-    <div class="chips" style="margin-top:12px">
-      <button class="btn sm primary" onclick="salvaCfg();conectarOutlook()">${conta?'Reconectar':'Conectar Outlook'}</button>
-      ${conta?'<button class="btn sm ghost" onclick="desconectarOutlook()">Desconectar</button>':''}
-      <button class="btn sm ghost" onclick="S.msgIds=[];save();toast('Vou reler todos os e-mails na próxima atualização')">Reler tudo</button>
-      <button class="btn sm ghost" onclick="S.cfg.trava=!S.cfg.trava;save();render();toast(S.cfg.trava?'Bloqueio ligado':'Bloqueio desligado')">${S.cfg.trava?'Desligar bloqueio ao abrir':'Exigir login ao abrir'}</button>
-    </div>
-    <p class="mini" style="margin-top:10px">Endereço de retorno a cadastrar no portal: <span class="num">${esc(location.origin+location.pathname)}</span></p>
-  </div>
-
-  <div class="card" style="margin-top:12px">
-    <div class="lbl">Alternativa sem registrar aplicativo</div>
-    <p class="mini" style="margin:8px 0 12px">Se preferir não mexer no portal da Microsoft, crie uma regra no Outlook encaminhando os e-mails do Nubank para um Gmail e rode o arquivo robo-gmail lá. Cole o endereço gerado abaixo. O app só usa isto quando o ID do aplicativo estiver vazio.</p>
-    <div class="grid g2">
-      <label class="f"><span class="lbl">Endereço do robô</span><input id="cfgUrl" value="${esc(S.cfg.syncUrl)}" placeholder="https://script.google.com/macros/s/.../exec"></label>
-      <label class="f"><span class="lbl">Chave de acesso</span><input id="cfgTok" value="${esc(S.cfg.syncToken)}" placeholder="senha definida no robô"></label>
+    <div class="rowsp"><div class="lbl">Sua conta</div><span class="pill in">${esc(emailAtual())}</span></div>
+    <p class="mini" style="margin:8px 0 12px">Os dados ficam no banco na nuvem, não neste aparelho. Entre com o mesmo e-mail em qualquer computador e tudo aparece igual. O robô do Gmail escreve direto nesse banco a cada 15 minutos, sem precisar de nenhum computador seu ligado.</p>
+    <div class="chips">
+      <button class="btn sm" onclick="sincroniza()">Recarregar do banco</button>
+      <button class="btn sm ghost" onclick="sairDaConta()">Sair</button>
     </div>
   </div>
 
@@ -717,16 +728,10 @@ function vAjustes(){
 function temStorage(){ try{ localStorage.setItem('t','1'); localStorage.removeItem('t'); return true; }catch(e){ return false; } }
 function salvaCfg(){
   const v=id=>{ const e=document.getElementById(id); return e?e.value.trim():''; };
-  S.cfg.clientId=v('cfgCli');
-  S.cfg.remetente=v('cfgRem')||'nubank';
-  S.cfg.dias=+v('cfgDias')||180;
-  msalApp=null;
-  S.cfg.syncUrl=document.getElementById('cfgUrl').value.trim();
-  S.cfg.syncToken=document.getElementById('cfgTok').value.trim();
   S.cfg.fechamento=+document.getElementById('cfgFec').value||1;
   S.cfg.vencimento=+document.getElementById('cfgVen').value||10;
   S.cfg.cdi=+document.getElementById('cfgCdi').value||0;
-  save(); toast('Ajustes salvos');
+  save(); nuvem(gravarConfig(), 'Ajustes salvos');
 }
 function ligaDrop(){
   const d=document.getElementById('drop'), f=document.getElementById('file');
@@ -768,115 +773,149 @@ function exportCSV(){
   const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download='lancamentos.csv'; a.click();
 }
 
-/* ---------- Outlook via Microsoft Graph ---------- */
-let msalApp=null;
-function msalInit(){
-  if(!S.cfg.clientId) throw new Error('cadastre o ID do aplicativo em Ajustes');
-  if(!window.msal) throw new Error('a biblioteca de login não carregou, confira a internet');
-  if(!msalApp) msalApp = new msal.PublicClientApplication({
-    auth:{ clientId:S.cfg.clientId, authority:'https://login.microsoftonline.com/common',
-           redirectUri: location.origin + location.pathname },
-    cache:{ cacheLocation:'localStorage' }
-  });
-  return msalApp;
-}
-function contaConectada(){ try{ const a=msalInit().getAllAccounts()[0]; return a?a.username:null; }catch(e){ return null; } }
-async function tokenGraph(){
-  const app=msalInit();
-  let acc=app.getAllAccounts()[0];
-  if(!acc){ const r=await app.loginPopup({scopes:['Mail.Read']}); acc=r.account; }
-  try{ return (await app.acquireTokenSilent({scopes:['Mail.Read'], account:acc})).accessToken; }
-  catch(e){ return (await app.acquireTokenPopup({scopes:['Mail.Read']})).accessToken; }
-}
-async function conectarOutlook(){
-  try{ await tokenGraph(); toast('Conectado como '+contaConectada()); render(); }
-  catch(e){ toast('Não deu para conectar: '+(e.message||e)); }
-}
-function desconectarOutlook(){ try{ msalInit().logoutPopup(); }catch(e){} S.msgIds=[]; save(); toast('Conta desconectada'); }
-function b64texto(b64){
-  const bin=atob(b64), arr=new Uint8Array(bin.length);
-  for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
-  return new TextDecoder('utf-8').decode(arr);
-}
-async function graph(url, tk){
-  const r=await fetch(url,{headers:{Authorization:'Bearer '+tk}});
-  if(!r.ok) throw new Error('Graph respondeu '+r.status);
-  return r.json();
-}
-async function sincronizaOutlook(){
-  const tk=await tokenGraph();
-  const desde=new Date(Date.now()-(+S.cfg.dias||180)*864e5).toISOString().slice(0,19)+'Z';
-  const url=encodeURI('https://graph.microsoft.com/v1.0/me/messages'
-    +'?$top=50&$orderby=receivedDateTime desc'
-    +'&$filter=hasAttachments eq true and receivedDateTime ge '+desde
-    +'&$select=id,subject,from,receivedDateTime');
-  const dados=await graph(url, tk);
-  const alvo=norm(S.cfg.remetente||'nubank');
-  const msgs=(dados.value||[]).filter(m=>{
-    const de=norm(((m.from||{}).emailAddress||{}).address||'');
-    return (de.includes(alvo)||norm(m.subject).includes(alvo)) && !S.msgIds.includes(m.id);
-  });
-  let novos=0, lidos=0;
-  for(const m of msgs){
-    const at=await graph('https://graph.microsoft.com/v1.0/me/messages/'+m.id+'/attachments', tk);
-    for(const a of (at.value||[])){
-      if(!a.contentBytes || !/\.(csv|ofx|txt)$/i.test(a.name||'')) continue;
-      const rotulo=(a.name||'')+' '+(m.subject||'');
-      novos += addTxs(parseArquivo(rotulo, b64texto(a.contentBytes)));
-      lidos++;
-    }
-    S.msgIds.push(m.id);
-  }
-  S.msgIds=S.msgIds.slice(-400); save();
-  return {novos, lidos, mensagens:msgs.length};
-}
+/* ============================ Supabase ============================ */
+const SB_URL = 'https://bcrwaciriwfweltgrlng.supabase.co';
+const SB_KEY = 'sb_publishable_1RW2RS6OzgZcV5VPQwupqA_5MobcYio';
+let sessao = null;
 
-/* ---------- botão atualizar ---------- */
-async function sincroniza(){
-  const b=document.getElementById('btnSync'); b.textContent='Buscando'; b.disabled=true;
+function sbHead(extra){
+  return Object.assign({ apikey: SB_KEY, Authorization: 'Bearer ' + (sessao ? sessao.access_token : SB_KEY),
+    'Content-Type': 'application/json' }, extra || {});
+}
+async function sb(caminho, opcoes){
+  const r = await fetch(SB_URL + '/rest/v1/' + caminho, Object.assign({ headers: sbHead((opcoes||{}).headers) }, opcoes));
+  if(!r.ok) throw new Error(await r.text());
+  return r.status === 204 ? null : r.json();
+}
+async function sbAuth(caminho, corpo){
+  const r = await fetch(SB_URL + '/auth/v1/' + caminho, { method:'POST',
+    headers:{ apikey: SB_KEY, 'Content-Type':'application/json' }, body: JSON.stringify(corpo) });
+  const j = await r.json();
+  if(!r.ok) throw new Error(j.error_description || j.msg || j.message || 'falha na autenticação');
+  return j;
+}
+function guardaSessao(s){
+  sessao = s;
+  try{ localStorage.setItem('fin.sessao', JSON.stringify(s)); }catch(e){ mem['fin.sessao'] = JSON.stringify(s); }
+}
+function leSessao(){
+  try{ const raw = store.get('fin.sessao'); return raw ? JSON.parse(raw) : null; }catch(e){ return null; }
+}
+async function renovaSessao(){
+  const s = leSessao();
+  if(!s || !s.refresh_token) return null;
   try{
-    if(S.cfg.clientId){
-      const r=await sincronizaOutlook();
-      toast(r.novos ? r.novos+' lançamentos novos de '+r.mensagens+' e-mails'
-        : r.mensagens ? 'E-mails lidos, nada novo além do que já estava aqui'
-        : 'Nenhum e-mail novo do Nubank com anexo');
-      render(); return;
-    }
-    if(!S.cfg.syncUrl){ toast('Conecte o Outlook em Ajustes'); go('ajustes'); return; }
-    await sincronizaRobo();
-  }catch(e){ toast('Falhou: '+(e.message||e)); }
-  finally{ b.textContent='Atualizar'; b.disabled=false; }
+    const nova = await sbAuth('token?grant_type=refresh_token', { refresh_token: s.refresh_token });
+    guardaSessao(nova); return nova;
+  }catch(e){ return null; }
 }
-async function sincronizaRobo(){
-  {
-    const u=new URL(S.cfg.syncUrl);
-    u.searchParams.set('token',S.cfg.syncToken);
-    u.searchParams.set('desde', S.txs.length?S.txs[0].data:'');
-    const r=await fetch(u.toString());
-    if(!r.ok) throw new Error('status '+r.status);
-    const j=await r.json();
-    const list=(j.lancamentos||j.transactions||[]).map(t=>mk(dt(t.data||t.date), t.desc||t.descricao||t.title, money(t.valor!=null?t.valor:t.amount), (t.fonte||t.tipo||'debito')));
-    const n=addTxs(list.filter(t=>t.data));
-    toast(n?n+' lançamentos novos do e-mail':'Nenhum e-mail novo desde a última busca');
-    render();
-  }
+async function enviarLink(email){
+  await sbAuth('otp', { email, create_user: true });
+}
+async function entrarComCodigo(email, codigo){
+  const j = await sbAuth('verify', { email, token: codigo, type: 'email' });
+  guardaSessao(j);
+  return j;
+}
+function sairDaConta(){
+  sessao = null;
+  try{ localStorage.removeItem('fin.sessao'); localStorage.removeItem('fin.v1'); }catch(e){}
+  location.reload();
 }
 
-/* ============================ boot ============================ */
+function emailAtual(){ try{ return JSON.parse(atob(sessao.access_token.split('.')[1])).email; }catch(e){ return 'conectado'; } }
+
+/* ---------- carga e gravação ---------- */
+async function carregarTudo(){
+  const [lanc, reg, orc, cx, cfg] = await Promise.all([
+    sb('lancamentos?select=*&order=data.desc'),
+    sb('regras?select=*'),
+    sb('orcamentos?select=*'),
+    sb('caixinhas?select=*'),
+    sb('config?select=dados')
+  ]);
+  S.txs = lanc.map(l => ({ id:l.id, data:l.data, desc:l.descricao, valor:+l.valor, fonte:l.fonte, cat:l.categoria, fixo:l.fixo }));
+  S.rules = reg.length ? reg.map(r => ({ kw:r.chave, cat:r.categoria })) : SEED.map(([kw,cat]) => ({kw,cat}));
+  S.budgets = {};
+  orc.forEach(o => {
+    S.budgets[o.categoria] = S.budgets[o.categoria] || { padrao:0, meses:{} };
+    if(o.mes === 'padrao') S.budgets[o.categoria].padrao = +o.valor;
+    else S.budgets[o.categoria].meses[o.mes] = +o.valor;
+  });
+  S.boxes = cx.map(c => ({ id:c.id, nome:c.nome, valor:+c.valor, pct:+c.pct_cdi }));
+  if(cfg[0] && cfg[0].dados) S.cfg = Object.assign({}, DEF.cfg, cfg[0].dados);
+  if(!reg.length) await sb('regras', { method:'POST', headers:{Prefer:'resolution=ignore-duplicates'},
+    body: JSON.stringify(S.rules.map(r => ({ chave:r.kw, categoria:r.cat }))) });
+  save();
+}
+async function gravarLancamentos(lista){
+  if(!lista.length) return;
+  for(let i = 0; i < lista.length; i += 300){
+    await sb('lancamentos', { method:'POST', headers:{ Prefer:'resolution=merge-duplicates' },
+      body: JSON.stringify(lista.slice(i, i+300).map(t => ({
+        id:t.id, data:t.data, descricao:t.desc, valor:t.valor, fonte:t.fonte, categoria:t.cat, fixo:!!t.fixo }))) });
+  }
+}
+async function gravarConfig(){
+  await sb('config', { method:'POST', headers:{ Prefer:'resolution=merge-duplicates' },
+    body: JSON.stringify({ dados: S.cfg, atualizado: new Date().toISOString() }) });
+}
+function nuvem(promessa, ok){
+  promessa.then(() => { if(ok) toast(ok); }).catch(e => toast('Não salvou na nuvem: ' + e.message));
+}
+
+/* ---------- sincronizar ---------- */
+async function sincroniza(){
+  const b = document.getElementById('btnSync'); b.textContent = 'Buscando'; b.disabled = true;
+  try{
+    await carregarTudo();
+    render();
+    toast(S.txs.length + ' lançamentos na nuvem');
+  }catch(e){ toast('Falhou: ' + (e.message || e)); }
+  finally{ b.textContent = 'Atualizar'; b.disabled = false; }
+}
+/* ============================ login e boot ============================ */
+function aviso(t, cor){ const e=document.getElementById('loginAviso'); if(e){ e.textContent=t; e.style.color=cor||'var(--txt2)'; } }
+let emailPendente='';
+async function acaoLogin(){
+  const b=document.getElementById('btnLogin');
+  const email=(document.getElementById('loginEmail').value||'').trim();
+  if(!email.includes('@')){ aviso('Escreva um e-mail válido.','var(--out)'); return; }
+  b.disabled=true;
+  try{
+    if(!emailPendente){
+      await enviarLink(email);
+      emailPendente=email;
+      document.getElementById('passoCodigo').style.display='block';
+      b.textContent='Entrar';
+      aviso('Código enviado. Confira a caixa de entrada e o lixo eletrônico.');
+    } else {
+      const codigo=(document.getElementById('loginCodigo').value||'').trim();
+      if(codigo.length<6){ aviso('O código tem seis dígitos.','var(--out)'); b.disabled=false; return; }
+      await entrarComCodigo(emailPendente, codigo);
+      await abrirApp();
+    }
+  }catch(e){ aviso(e.message||'não deu certo','var(--out)'); }
+  finally{ b.disabled=false; }
+}
+async function abrirApp(){
+  document.getElementById('lock').style.display='none';
+  try{ await carregarTudo(); }catch(e){ toast('Banco fora do ar: '+e.message); }
+  if(S.txs.length){ filtro.ym=ym(S.txs[0].data); filtro.ano=S.txs[0].data.slice(0,4); }
+  document.documentElement.dataset.theme=S.cfg.theme||'dark';
+  montaNav(); go('painel');
+}
 document.getElementById('btnSync').onclick=sincroniza;
 document.getElementById('btnTheme').onclick=()=>{
   const t=document.documentElement.dataset.theme==='dark'?'light':'dark';
-  document.documentElement.dataset.theme=t; S.cfg.theme=t; save();
+  document.documentElement.dataset.theme=t; S.cfg.theme=t; save(); nuvem(gravarConfig());
 };
 document.documentElement.dataset.theme=S.cfg.theme||'dark';
-async function destravar(){
-  try{ await tokenGraph(); document.getElementById('lock').style.display='none'; render(); }
-  catch(e){ toast('Login não concluído: '+(e.message||e)); }
-}
-if(S.cfg.trava && S.cfg.clientId && !contaConectada()) document.getElementById('lock').style.display='flex';
-if(S.txs.length){ filtro.ym=ym(S.txs[0].data); filtro.ano=S.txs[0].data.slice(0,4); }
-regras();
-montaNav(); go('painel');
+regras(); montaNav();
+(async () => {
+  const s = await renovaSessao();
+  if(s) abrirApp();
+})();
 </script>
 </body>
 </html>
