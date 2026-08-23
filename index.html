@@ -303,7 +303,7 @@ const doMes = m => S.txs.filter(t=>ym(t.data)===m);
 const NAO_GASTO = new Set(['Pagamento de fatura','Investimentos','Transferências']);
 const real = t => !NAO_GASTO.has(t.cat);
 const gasto = ts => ts.filter(t=>t.valor<0 && real(t)).reduce((s,t)=>s+Math.abs(t.valor),0);
-const entrada = ts => ts.filter(t=>t.valor>0 && real(t)).reduce((s,t)=>s+t.valor,0);
+const entrada = ts => ts.filter(t=>t.valor>0 && t.cat!=='Pagamento de fatura' && t.cat!=='Investimentos').reduce((s,t)=>s+t.valor,0);
 const movido = ts => ts.filter(t=>t.valor<0 && !real(t)).reduce((s,t)=>s+Math.abs(t.valor),0);
 function porCat(ts){ const o={}; ts.filter(t=>t.valor<0 && real(t)).forEach(t=>{ const c=t.cat||'Sem categoria'; o[c]=(o[c]||0)+Math.abs(t.valor); }); return Object.entries(o).sort((a,b)=>b[1]-a[1]); }
 function previsto(cat, mes){ const b=S.budgets[cat]; if(!b) return 0; return (b.meses&&b.meses[mes]!=null)?b.meses[mes]:(b.padrao||0); }
