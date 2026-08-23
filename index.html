@@ -270,7 +270,7 @@ function categoriza(tx){
   return null;
 }
 function sugereChave(desc){
-  let d = norm(desc);
+  let d = norm(desc).replace(/ - PARCELA \d+\/\d+$/,'');
   /* descricoes do Nubank vem como "Compra no debito - LOJA" ou "Transferencia enviada pelo Pix - FULANO".
      O que identifica de verdade e o que vem depois do primeiro tracinho. */
   const corte = d.indexOf(' - ');
